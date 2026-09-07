@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Secrets & local env
+.env
+
+# Runtime artifacts
+logs/
+diag.log
+backups/
+celerybeat-schedule
+celerybeat-schedule-shm
+celerybeat-schedule-wal
+
+# Business plugins (kept in their own repositories, never committed here).
+# The framework discovers these subpackages optionally — see
+# app/business/__init__.py; a checkout without them is pure infrastructure.
+app/business/*/
+
+# Local design blueprint (working notes, not part of the distributed repo)
+通用多Agent框架技术栈建议.md
+
+# Documentation stays local-only; the repo ships with the top-level README only
+docs/
+configs/README.md
+migrations/versions/README.md
+
+# OS / IDE
+.DS_Store
+Thumbs.db

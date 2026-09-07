@@ -1,0 +1,122 @@
+[app]
+name = "multiagent"
+env = "development"
+debug = true
+
+[api]
+host = "127.0.0.1"
+port = 8000
+prefix = "/api/v1"
+
+[orchestrator]
+backend = "simple"
+max_graph_steps = 20
+
+[database]
+driver = "postgresql+psycopg"
+host = "127.0.0.1"
+port = 5432
+name = "multiagent_db"
+user = "multiagent_user"
+# password references the POSTGRES_PASSWORD environment variable so secrets
+# never live in the committed config (same ${VAR} mechanism as [llm].api_key).
+password = "${POSTGRES_PASSWORD}"
+echo = false
+pool_size = 10
+max_overflow = 20
+connect_timeout_seconds = 3
+
+[redis]
+host = "192.168.1.104"
+port = 6379
+db = 0
+# Redis 8 ACL login: username/password can both come from local env vars.
+username = "default"
+password = "${REDIS_PASSWORD}"
+decode_responses = true
+connect_timeout_seconds = 10.0
+socket_timeout_seconds = 10.0
+
+[celery]
+broker_db = 1
+result_db = 2
+task_default_queue = "multiagent"
+# Leave empty to use the platform default (Windows -> solo, Linux/macOS -> prefork).
+worker_pool = ""
+
+[llm]
+provider = "deepseek"
+# LiteLLM requires provider-prefixed model names ("deepseek/deepseek-chat"),
+# otherwise it fails with "LLM Provider NOT provided".
+model = "deepseek/deepseek-chat"
+api_base = "https://api.deepseek.com"
+# api_key references the DEEPSEEK_API_KEY environment variable so secrets
+# never live in the committed config. Loaded by Settings.from_toml.
+api_key = "${DEEPSEEK_API_KEY}"
+timeout_seconds = 60
+max_retries = 2
+retry_backoff_seconds = 1.0
+retry_max_seconds = 8.0
+
+# Named providers for multi-model routing. A request can select one by
+# passing its name as LLMRequest.provider (agents/orchestrators pick a
+# profile per task type, or end users override via request llm_profile).
+[llm.providers]
+deepseek = { api_base = "https://api.deepseek.com", api_key = "${DEEPSEEK_API_KEY}", model = "deepseek/deepseek-chat" }
+# openai = { api_base = "https://api.openai.com/v1", api_key = "${OPENAI_API_KEY}", model = "openai/gpt-4.1-mini" }
+
+# Per-model token pricing (USD per 1M tokens) used for cost estimation.
+# Keys are the exact model strings passed to LiteLLM.
+[llm.pricing]
+"deepseek/deepseek-chat" = { input_per_million = 0.27, output_per_million = 1.10 }
+
+[knowledge.pgvector]
+enabled = true
+embedding_dimension = 1536
+collection = "knowledge_chunks"
+
+# Session memory and long-term memory (user habits / project facts).
+# session_history_limit caps how many prior turns are injected into prompts;
+# recall_limit caps how many durable memories are recalled per run;
+# auto_extract enables LLM-powered memory extraction after each request.
+[memory]
+enabled = true
+session_history_limit = 20
+recall_limit = 10
+auto_extract = true
+project_key = "default"
+# Merge repeated statements (normalized content equal in the same
+# memory_type/scope/scope_key) instead of appending duplicates.
+# merge_similarity_threshold (0..1) also merges near-duplicate wording
+# (difflib ratio); 0 disables fuzzy merging.
+merge_duplicates = true
+merge_similarity_threshold = 0.85
+
+# Tool layer: execution policy for the real outbound http_request tool.
+# blocked_hosts refuses exact host matches (SSRF guard); cloud metadata
+# endpoints (169.254.169.254 etc.) are always blocked.
+[tools]
+enabled = true
+
+[tools.http]
+timeout_seconds = 15.0
+user_agent = "multiagent-agent/0.1"
+allowed_methods = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]
+max_response_bytes = 1048576
+follow_redirects = true
+blocked_hosts = []
+
+[knowledge.milvus]
+enabled = true
+host = "127.0.0.1"
+port = 19530
+user = ""
+password = ""
+database = "default"
+collection = "knowledge_chunks"
+
+[observability]
+service_name = "multiagent-service"
+langfuse_host = ""
+langfuse_public_key = ""
+langfuse_secret_key = ""

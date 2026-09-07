@@ -1,0 +1,43 @@
+# Core API and configuration
+fastapi>=0.116,<1.0
+uvicorn[standard]>=0.35,<1.0
+pydantic>=2.11,<3.0
+pydantic-settings>=2.10,<3.0
+python-dotenv>=1.1,<2.0
+orjson>=3.11,<4.0
+
+# Agent orchestration and LLM access
+langgraph>=0.6,<1.0
+langchain-core>=0.3,<1.0
+litellm>=1.75,<2.0
+tenacity>=9.1,<10.0
+httpx>=0.28,<1.0
+tiktoken>=0.10,<1.0
+
+# Database, cache, and tasks
+sqlalchemy>=2.0,<3.0
+alembic>=1.16,<2.0
+psycopg[binary]>=3.2,<4.0
+redis>=6.2,<7.0
+celery>=5.5,<6.0
+
+# Knowledge base and vector stores
+pgvector>=0.3,<1.0
+pymilvus>=2.5,<3.0
+
+# Document parsing and data processing
+unstructured>=0.18,<1.0
+pymupdf>=1.26,<2.0
+python-docx>=1.2,<2.0
+pandas>=2.3,<3.0
+
+# Observability
+langfuse>=3.2,<4.0
+opentelemetry-api>=1.36,<2.0
+opentelemetry-sdk>=1.36,<2.0
+opentelemetry-instrumentation-fastapi>=0.57b0,<1.0
+structlog>=25.4,<26.0
+
+# Testing
+pytest>=8.4,<9.0
+pytest-asyncio>=1.1,<2.0
