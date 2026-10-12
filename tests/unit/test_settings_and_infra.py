@@ -69,7 +69,7 @@ def test_llm_and_vectorstore_configs(monkeypatch) -> None:
     vectorstore_configs = get_vectorstore_configs(settings)
 
     assert llm_config["provider"] == "deepseek"
-    assert llm_config["model"] == "deepseek/deepseek-chat"
+    assert llm_config["model"] == "deepseek/deepseek-v4-flash"
     assert llm_config["api_base"] == "https://api.deepseek.com"
     assert llm_config["api_key"] == "sk-test-env-key"
     assert vectorstore_configs["pgvector"]["collection"] == "knowledge_chunks"
@@ -84,12 +84,15 @@ def test_llm_providers_and_pricing_parse_from_config(monkeypatch) -> None:
     settings = load_settings(CONFIG_PATH)
 
     # Named provider routing table: name -> api_base/api_key/model.
-    assert settings.llm.providers["deepseek"].model == "deepseek/deepseek-chat"
+    # model is deliberately None here: a pinned provider model would override
+    # the model carried by each request (_resolve_provider), silently routing
+    # every console-picked model onto the same one.
+    assert settings.llm.providers["deepseek"].model is None
     assert settings.llm.providers["deepseek"].api_base == "https://api.deepseek.com"
     assert settings.llm.providers["deepseek"].api_key == "sk-test-env-key"
 
     # Per-model pricing table used by estimate_cost_usd().
-    price = settings.llm.pricing["deepseek/deepseek-chat"]
+    price = settings.llm.pricing["deepseek/deepseek-v4-flash"]
     assert price.input_per_million > 0
     assert price.output_per_million > 0
 

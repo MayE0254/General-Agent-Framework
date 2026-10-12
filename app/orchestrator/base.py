@@ -93,13 +93,23 @@ class BaseOrchestrator(ABC):
         if not assistant_output:
             assistant_output = state.errors and "; ".join(state.errors) or ""
 
+        # A caller that already persisted this request's user turn (the chat
+        # entry point does, so the question is visible while the run is still
+        # in flight) must not get it duplicated here. The assistant turn is
+        # written either way: for a chat hand-off it is the only place the
+        # specialist's answer reaches the transcript.
+        turns: list[dict[str, Any]] = []
+        if not self._memory_service.has_request_turn(
+            session_id=state.session_id, request_id=state.request_id
+        ):
+            turns.append({"role": "user", "content": user_input, "step_index": 1})
+        turns.append(
+            {"role": "assistant", "content": assistant_output, "step_index": 2}
+        )
         self._memory_service.append_session_messages(
             session_id=state.session_id,
             request_id=state.request_id,
-            turns=[
-                {"role": "user", "content": user_input, "step_index": 1},
-                {"role": "assistant", "content": assistant_output, "step_index": 2},
-            ],
+            turns=turns,
         )
         stored = await self._memory_service.extract_and_store_memories(
             session_id=state.session_id,

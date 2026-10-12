@@ -1,13 +1,25 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from datetime import datetime
 
-from app.api.dependencies import get_memory_service, get_runtime_query_service
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+
+from app.api.dependencies import (
+    AuthenticatedUser,
+    admin_required,
+    check_request_ownership,
+    check_session_ownership,
+    get_current_user,
+    get_memory_service,
+    get_runtime_query_service,
+)
 from app.schemas import (
     AgentRunLogResponse,
     AgentRunLogListResponse,
     LLMCallLogResponse,
     LLMCallLogListResponse,
+    LLMUsageBucketResponse,
+    LLMUsageReportResponse,
     MemoryDeleteResponse,
     MemoryEntryCreateRequest,
     MemoryEntryResponse,
@@ -31,6 +43,21 @@ from app.schemas import (
 from app.services import MemoryService, RuntimeQueryService
 
 router = APIRouter(tags=["runtime"])
+
+
+def _guard_request_scoped_query(
+    request: Request,
+    user: AuthenticatedUser,
+    request_id: str | None,
+) -> None:
+    """Request-scoped queries: owners may pass request_id; broad lists are admin-only."""
+    if request_id:
+        check_request_ownership(request, user, request_id)
+    elif not user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrator permission required.",
+        )
 
 
 def _to_task_run_response(record) -> TaskRunResponse:
@@ -153,6 +180,10 @@ def _to_session_response(record) -> SessionResponse:
     )
 
 
+def _to_usage_bucket_response(bucket: dict) -> LLMUsageBucketResponse:
+    return LLMUsageBucketResponse(**bucket)
+
+
 @router.get("/runtime/tasks", response_model=TaskRunListResponse)
 def list_runtime_tasks(
     status: str | None = Query(default=None),
@@ -161,6 +192,7 @@ def list_runtime_tasks(
     limit: int = Query(default=20, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     service: RuntimeQueryService = Depends(get_runtime_query_service),
+    _: AuthenticatedUser = Depends(admin_required),
 ) -> TaskRunListResponse:
     result = service.list_task_runs(
         status=status,
@@ -183,8 +215,11 @@ def list_runtime_tasks(
 @router.get("/runtime/tasks/{request_id}", response_model=RuntimeTaskDetailResponse)
 def get_runtime_task_detail(
     request_id: str,
+    http_request: Request,
     service: RuntimeQueryService = Depends(get_runtime_query_service),
+    user: AuthenticatedUser = Depends(get_current_user),
 ) -> RuntimeTaskDetailResponse:
+    check_request_ownership(http_request, user, request_id)
     detail = service.get_task_run_detail(request_id)
     return RuntimeTaskDetailResponse(
         task_run=_to_task_run_response(detail["task_run"]),
@@ -202,8 +237,11 @@ def list_runtime_agent_runs(
     status: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    request: Request = None,
     service: RuntimeQueryService = Depends(get_runtime_query_service),
+    user: AuthenticatedUser = Depends(get_current_user),
 ) -> AgentRunLogListResponse:
+    _guard_request_scoped_query(request, user, request_id)
     result = service.list_agent_runs(
         request_id=request_id,
         agent_id=agent_id,
@@ -224,6 +262,7 @@ def list_runtime_agent_runs(
 
 @router.get("/runtime/tool-calls", response_model=ToolCallLogListResponse)
 def list_runtime_tool_calls(
+    http_request: Request,
     request_id: str | None = Query(default=None),
     agent_id: str | None = Query(default=None),
     tool_name: str | None = Query(default=None),
@@ -233,7 +272,9 @@ def list_runtime_tool_calls(
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     service: RuntimeQueryService = Depends(get_runtime_query_service),
+    user: AuthenticatedUser = Depends(get_current_user),
 ) -> ToolCallLogListResponse:
+    _guard_request_scoped_query(http_request, user, request_id)
     result = service.list_tool_calls(
         request_id=request_id,
         agent_id=agent_id,
@@ -257,6 +298,7 @@ def list_runtime_tool_calls(
 
 @router.get("/runtime/llm-calls", response_model=LLMCallLogListResponse)
 def list_runtime_llm_calls(
+    http_request: Request,
     request_id: str | None = Query(default=None),
     agent_id: str | None = Query(default=None),
     model: str | None = Query(default=None),
@@ -264,7 +306,9 @@ def list_runtime_llm_calls(
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     service: RuntimeQueryService = Depends(get_runtime_query_service),
+    user: AuthenticatedUser = Depends(get_current_user),
 ) -> LLMCallLogListResponse:
+    _guard_request_scoped_query(http_request, user, request_id)
     result = service.list_llm_calls(
         request_id=request_id,
         agent_id=agent_id,
@@ -284,6 +328,38 @@ def list_runtime_llm_calls(
     )
 
 
+@router.get("/runtime/usage/llm", response_model=LLMUsageReportResponse)
+def get_llm_usage_report(
+    user_id: str | None = Query(default=None),
+    model: str | None = Query(default=None),
+    created_from: datetime | None = Query(default=None),
+    created_to: datetime | None = Query(default=None),
+    service: RuntimeQueryService = Depends(get_runtime_query_service),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> LLMUsageReportResponse:
+    """Token and cost spend by model and by member.
+
+    Members are pinned to their own spend; administrators see the whole
+    platform and may narrow it down by member, model or time window.
+    """
+    effective_user_id = user_id if user.is_admin else user.id
+    report = service.get_llm_usage_report(
+        user_id=effective_user_id,
+        model=model,
+        created_from=created_from,
+        created_to=created_to,
+    )
+    return LLMUsageReportResponse(
+        totals=_to_usage_bucket_response(report["totals"]),
+        by_model=[_to_usage_bucket_response(item) for item in report["by_model"]],
+        by_user=[_to_usage_bucket_response(item) for item in report["by_user"]],
+        by_user_model=[
+            _to_usage_bucket_response(item) for item in report["by_user_model"]
+        ],
+        filters=report["filters"],
+    )
+
+
 @router.get("/runtime/workflow-runs", response_model=WorkflowRunListResponse)
 def list_runtime_workflow_runs(
     request_id: str | None = Query(default=None),
@@ -291,10 +367,14 @@ def list_runtime_workflow_runs(
     limit: int = Query(default=20, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     service: RuntimeQueryService = Depends(get_runtime_query_service),
+    user: AuthenticatedUser = Depends(get_current_user),
 ) -> WorkflowRunListResponse:
+    # Non-admin users only see workflow runs they own (metadata user_id).
+    effective_user_id = None if user.is_admin else user.id
     result = service.list_workflow_runs(
         request_id=request_id,
         status=status,
+        user_id=effective_user_id,
         limit=limit,
         offset=offset,
     )
@@ -315,8 +395,11 @@ def list_runtime_workflow_runs(
 )
 def get_runtime_workflow_run_detail(
     request_id: str,
+    http_request: Request,
     service: RuntimeQueryService = Depends(get_runtime_query_service),
+    user: AuthenticatedUser = Depends(get_current_user),
 ) -> WorkflowRunDetailResponse:
+    check_request_ownership(http_request, user, request_id)
     detail = service.get_workflow_run_detail(request_id)
     return WorkflowRunDetailResponse(
         workflow_run=_to_workflow_run_response(detail["workflow_run"]),
@@ -334,6 +417,7 @@ def list_runtime_sessions(
     limit: int = Query(default=20, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     service: RuntimeQueryService = Depends(get_runtime_query_service),
+    _: AuthenticatedUser = Depends(admin_required),
 ) -> SessionListResponse:
     result = service.list_sessions(
         session_id=session_id,
@@ -359,8 +443,11 @@ def list_runtime_sessions(
 )
 def get_runtime_session_detail(
     session_id: str,
+    http_request: Request,
     service: RuntimeQueryService = Depends(get_runtime_query_service),
+    user: AuthenticatedUser = Depends(get_current_user),
 ) -> SessionDetailResponse:
+    check_session_ownership(http_request, user, session_id)
     detail = service.get_session_detail(session_id)
     return SessionDetailResponse(
         session=_to_session_response(detail["session"]),
@@ -375,10 +462,13 @@ def get_runtime_session_detail(
 )
 def list_session_messages(
     session_id: str,
+    http_request: Request,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     service: MemoryService = Depends(get_memory_service),
+    user: AuthenticatedUser = Depends(get_current_user),
 ) -> SessionMessageListResponse:
+    check_session_ownership(http_request, user, session_id)
     items = service.list_session_messages(
         session_id, limit=limit + offset
     )
@@ -414,6 +504,7 @@ def list_memories(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     service: MemoryService = Depends(get_memory_service),
+    _: AuthenticatedUser = Depends(admin_required),
 ) -> MemoryListResponse:
     result = service.list_memories(
         scope=scope,
@@ -441,6 +532,7 @@ def list_memories(
 def create_memory(
     payload: MemoryEntryCreateRequest,
     service: MemoryService = Depends(get_memory_service),
+    _: AuthenticatedUser = Depends(admin_required),
 ) -> MemoryEntryResponse:
     record = service.add_memory(
         memory_type=payload.memory_type,
@@ -463,6 +555,7 @@ def update_memory(
     memory_id: str,
     payload: MemoryEntryUpdateRequest,
     service: MemoryService = Depends(get_memory_service),
+    _: AuthenticatedUser = Depends(admin_required),
 ) -> MemoryEntryResponse:
     updates = payload.model_dump(exclude_unset=True)
     record = service.update_memory(memory_id, **updates)
@@ -481,6 +574,7 @@ def update_memory(
 def delete_memory(
     memory_id: str,
     service: MemoryService = Depends(get_memory_service),
+    _: AuthenticatedUser = Depends(admin_required),
 ) -> MemoryDeleteResponse:
     deleted = service.delete_memory(memory_id)
     if not deleted:

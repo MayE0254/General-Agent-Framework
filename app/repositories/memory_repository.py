@@ -50,6 +50,17 @@ class MemoryRepository:
         )
         return int(self._session.scalar(statement) or 0)
 
+    def has_session_message(self, session_id: str, request_id: str) -> bool:
+        statement = (
+            select(func.count())
+            .select_from(SessionMessageRecord)
+            .where(
+                SessionMessageRecord.session_id == session_id,
+                SessionMessageRecord.request_id == request_id,
+            )
+        )
+        return int(self._session.scalar(statement) or 0) > 0
+
     # ---- memory entries ----
 
     def add_memory(self, record: MemoryEntryRecord) -> MemoryEntryRecord:

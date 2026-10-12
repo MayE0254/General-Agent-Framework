@@ -37,7 +37,7 @@ class FakeLLMService:
 
         class _Response:
             content = ""
-            model = "deepseek/deepseek-chat"
+            model = "deepseek/deepseek-v4-flash"
 
         response = _Response()
         response.content = self._payload

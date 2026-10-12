@@ -36,6 +36,7 @@ class WorkflowRunRepository:
         *,
         request_id: str | None = None,
         status: str | None = None,
+        user_id: str | None = None,
         limit: int = 20,
         offset: int = 0,
     ) -> tuple[list[WorkflowRunRecord], int]:
@@ -44,6 +45,11 @@ class WorkflowRunRepository:
             conditions.append(WorkflowRunRecord.request_id == request_id)
         if status is not None:
             conditions.append(WorkflowRunRecord.status == status)
+        if user_id is not None:
+            # user_id lives in the run metadata JSON payload.
+            conditions.append(
+                WorkflowRunRecord.metadata_payload["user_id"].as_string() == user_id
+            )
 
         statement = select(WorkflowRunRecord)
         count_statement = select(func.count()).select_from(WorkflowRunRecord)

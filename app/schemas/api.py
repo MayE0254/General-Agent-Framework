@@ -456,7 +456,9 @@ class ReviewContinuationResponse(BaseModel):
 class ReviewDecisionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    decided_by: str | None = Field(default=None, max_length=128)
+    # The decider is derived from the authenticated session (see
+    # app/api/routes/reviews.py): the submitting user decides, admins are
+    # read-only, so a client-supplied decided_by must not exist.
     note: str = Field(default="", max_length=2000)
 
 
@@ -472,3 +474,125 @@ class ApproveReviewResponse(BaseModel):
     review: HumanReviewResponse
     continuation: ReviewContinuationResponse | None = Field(default=None)
     continuation_run: WorkflowRunResponse | None = Field(default=None)
+
+
+class ModelPoolEntryResponse(BaseModel):
+    """A selectable model. Never carries provider credentials: ``provider_key``
+    only names an ``[llm.providers]`` block that owns the api_base/api_key."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    name: str
+    provider_key: str
+    model: str
+    description: str
+    temperature: float
+    max_tokens: int | None
+    input_per_million: float
+    output_per_million: float
+    enabled: bool
+    is_default: bool
+    sort_order: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class ModelPoolEntryCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(..., min_length=1, max_length=64)
+    provider_key: str = Field(..., min_length=1, max_length=64)
+    model: str = Field(..., min_length=1, max_length=128)
+    description: str = Field(default="", max_length=512)
+    temperature: float = Field(default=0.2, ge=0.0, le=2.0)
+    max_tokens: int | None = Field(default=None, ge=1)
+    input_per_million: float = Field(default=0.0, ge=0.0)
+    output_per_million: float = Field(default=0.0, ge=0.0)
+    enabled: bool = True
+    is_default: bool = False
+    sort_order: int = 0
+
+
+class ModelPoolEntryUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=64)
+    provider_key: str | None = Field(default=None, min_length=1, max_length=64)
+    model: str | None = Field(default=None, min_length=1, max_length=128)
+    description: str | None = Field(default=None, max_length=512)
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    # Explicitly nullable so an admin can clear a previously set cap.
+    max_tokens: int | None = Field(default=None, ge=1)
+    input_per_million: float | None = Field(default=None, ge=0.0)
+    output_per_million: float | None = Field(default=None, ge=0.0)
+    enabled: bool | None = Field(default=None)
+    is_default: bool | None = Field(default=None)
+    sort_order: int | None = Field(default=None)
+
+
+class ModelPoolListResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[ModelPoolEntryResponse]
+    pagination: PaginationMetaResponse
+
+
+class ModelPoolDeleteResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    entry_id: str
+    deleted: bool
+
+
+class ChatSessionCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = Field(default=None, max_length=64)
+
+
+class ChatSessionDeleteResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    deleted: bool
+
+
+class ChatTurnRequest(BaseModel):
+    """One chat turn. ``session_id`` may be omitted to start a new session."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    content: str = Field(..., min_length=1, max_length=20_000)
+    session_id: str | None = Field(default=None, max_length=128)
+    # Model selection: an explicit pool entry id wins over a display name;
+    # with neither, the pool's default entry answers.
+    model_entry_id: str | None = Field(default=None, max_length=36)
+    model_name: str | None = Field(default=None, max_length=64)
+
+
+class LLMUsageBucketResponse(BaseModel):
+    """Token/cost rollup. ``key`` is set for single-column groupings; the
+    user+model cross reports ``user_id``/``model`` instead."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: str | None = None
+    user_id: str | None = None
+    model: str | None = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cost_usd: float = 0.0
+    call_count: int = 0
+    failed_call_count: int = 0
+
+
+class LLMUsageReportResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    totals: LLMUsageBucketResponse
+    by_model: list[LLMUsageBucketResponse]
+    by_user: list[LLMUsageBucketResponse]
+    by_user_model: list[LLMUsageBucketResponse]
+    filters: dict[str, Any]

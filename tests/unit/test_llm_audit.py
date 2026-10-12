@@ -153,7 +153,7 @@ def test_workflow_persists_llm_call_logs_to_audit_store() -> None:
                     "deepseek": {
                         "api_base": "https://api.deepseek.com",
                         "api_key": "sk-deepseek",
-                        "model": "deepseek/deepseek-chat",
+                        "model": "deepseek/deepseek-v4-flash",
                     }
                 },
             ),
@@ -193,7 +193,10 @@ def test_workflow_persists_llm_call_logs_to_audit_store() -> None:
             assert item.session_id == "session-llm-1"
             assert item.status == "success"
             assert item.total_tokens == 5
-            assert item.model == "gpt-test"
+            # Audited model is the *resolved* one: the "deepseek" provider
+            # overrides the requested "gpt-test", and usage stats must
+            # reflect what actually ran (and got billed).
+            assert item.model == "deepseek/deepseek-v4-flash"
             assert item.messages
 
         # Query-side: filtered listing and per-request detail aggregates.

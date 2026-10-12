@@ -13,11 +13,13 @@ from app.tools.system import (
 
 if TYPE_CHECKING:
     from app.core.settings import KnowledgeSettings, ToolSettings
+    from app.knowledge.base import BaseKnowledgeRetriever
 
 
 def create_default_tool_registry(
     tool_settings: ToolSettings | None = None,
     knowledge_settings: KnowledgeSettings | None = None,
+    knowledge_retriever: BaseKnowledgeRetriever | None = None,
 ) -> ToolRegistry:
     """Register the framework's default system tools.
 
@@ -38,6 +40,8 @@ def create_default_tool_registry(
         configs["knowledge_search"] = knowledge_settings.model_dump(
             exclude={"pgvector", "milvus"}
         )
+    if knowledge_retriever is not None:
+        configs.setdefault("knowledge_search", {})["retriever_instance"] = knowledge_retriever
     registry.register_many(
         [
             KnowledgeSearchTool,

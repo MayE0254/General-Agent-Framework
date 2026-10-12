@@ -124,6 +124,14 @@ class MemoryService:
     def count_session_messages(self, session_id: str) -> int:
         return self._repository.count_session_messages(session_id)
 
+    def has_request_turn(self, *, session_id: str, request_id: str) -> bool:
+        """True when this request already has persisted turns in the session.
+
+        The chat entry point records the user turn before handing a task to
+        the orchestrator, so the orchestrator must not append it a second time.
+        """
+        return self._repository.has_session_message(session_id, request_id)
+
     # ---- durable memory ----
 
     def add_memory(
@@ -385,7 +393,7 @@ class MemoryService:
         user_input: str,
         assistant_output: str,
         project_key: str,
-        model: str = "deepseek/deepseek-chat",
+        model: str = "deepseek/deepseek-v4-flash",
     ) -> int:
         """Ask the LLM what is worth remembering, then persist durable entries.
 

@@ -21,13 +21,17 @@ if config.config_file_name is not None:
 
 # Resolve the target URL: prefer the MIGRATE_DATABASE_URL override (e.g. a
 # sqlite file for local visual inspection), otherwise reuse the unified
-# configs/application.toml database settings.
+# configs/application.toml database settings. Percent signs must be doubled
+# because ConfigParser interpolation treats a lone '%' (e.g. the %3D in a
+# search_path query option) as invalid interpolation syntax.
 migrate_url = os.environ.get("MIGRATE_DATABASE_URL")
 if migrate_url:
-    config.set_main_option("sqlalchemy.url", migrate_url)
+    config.set_main_option("sqlalchemy.url", migrate_url.replace("%", "%%"))
 else:
     settings = get_settings()
-    config.set_main_option("sqlalchemy.url", settings.database.build_url())
+    config.set_main_option(
+        "sqlalchemy.url", settings.database.build_url().replace("%", "%%")
+    )
 
 target_metadata = Base.metadata
 

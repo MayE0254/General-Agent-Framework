@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from app.api.dependencies import get_agent_registry
+from app.api.dependencies import AuthenticatedUser, get_agent_registry, get_current_user
 from app.agents.registry import AgentRegistry
 from app.schemas import AgentMetadataResponse
 
@@ -12,6 +12,7 @@ router = APIRouter(tags=["agents"])
 @router.get("/agents", response_model=list[AgentMetadataResponse])
 def list_agents(
     registry: AgentRegistry = Depends(get_agent_registry),
+    _: AuthenticatedUser = Depends(get_current_user),
 ) -> list[AgentMetadataResponse]:
     return [
         AgentMetadataResponse(

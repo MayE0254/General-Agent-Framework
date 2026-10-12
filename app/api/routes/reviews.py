@@ -3,7 +3,12 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 
-from app.api.dependencies import get_human_review_service, get_orchestrator
+from app.api.dependencies import (
+    AuthenticatedUser,
+    get_current_user,
+    get_human_review_service,
+    get_orchestrator,
+)
 from app.orchestrator import WorkflowStatus, WorkflowTerminalReason
 from app.schemas import (
     ApproveReviewRequest,
@@ -18,6 +23,25 @@ from app.schemas import (
 from app.services import HumanReviewService, event_to_sse_frame
 
 router = APIRouter(tags=["reviews"])
+
+
+def _ensure_review_operator(
+    service: HumanReviewService,
+    review_id: str,
+    user: AuthenticatedUser,
+) -> None:
+    """Only the submitting user may decide a review; admins are read-only."""
+    if user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrators review outcomes read-only; decisions belong to the submitting user.",
+        )
+    task = service.get_review(review_id)
+    if task is None or task.user_id != user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Review task '{review_id}' was not found.",
+        )
 
 
 def _to_review_response(record) -> HumanReviewResponse:
@@ -46,12 +70,18 @@ def _to_review_response(record) -> HumanReviewResponse:
 @router.get("/runtime/reviews", response_model=HumanReviewListResponse)
 def list_reviews(
     status_filter: str | None = Query(default=None, alias="status"),
+    user_id: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     service: HumanReviewService = Depends(get_human_review_service),
+    user: AuthenticatedUser = Depends(get_current_user),
 ) -> HumanReviewListResponse:
+    # Non-admin users only ever see review tasks they submitted; admins can
+    # filter by member (user_id) to group review outcomes per user.
+    effective_user_id = user.id if not user.is_admin else user_id
     result = service.list_reviews(
         status=status_filter,
+        user_id=effective_user_id,
         limit=limit,
         offset=offset,
     )
@@ -69,6 +99,7 @@ def list_reviews(
 @router.get("/runtime/reviews/events")
 async def stream_review_events(
     service: HumanReviewService = Depends(get_human_review_service),
+    _: AuthenticatedUser = Depends(get_current_user),
 ) -> StreamingResponse:
     """SSE stream of review lifecycle events (created/decided) for UI prompts."""
 
@@ -91,9 +122,15 @@ async def stream_review_events(
 def get_review(
     review_id: str,
     service: HumanReviewService = Depends(get_human_review_service),
+    user: AuthenticatedUser = Depends(get_current_user),
 ) -> HumanReviewResponse:
     task = service.get_review(review_id)
     if task is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Review task '{review_id}' was not found.",
+        )
+    if not user.is_admin and task.user_id != user.id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Review task '{review_id}' was not found.",
@@ -110,11 +147,13 @@ async def approve_review(
     payload: ApproveReviewRequest,
     service: HumanReviewService = Depends(get_human_review_service),
     orchestrator=Depends(get_orchestrator),
+    user: AuthenticatedUser = Depends(get_current_user),
 ) -> ApproveReviewResponse:
+    _ensure_review_operator(service, review_id, user)
     try:
         task = service.approve(
             review_id,
-            decided_by=payload.decided_by,
+            decided_by=user.username,
             note=payload.note,
         )
     except KeyError as exc:
@@ -186,11 +225,13 @@ def reject_review(
     review_id: str,
     payload: ReviewDecisionRequest,
     service: HumanReviewService = Depends(get_human_review_service),
+    user: AuthenticatedUser = Depends(get_current_user),
 ) -> HumanReviewResponse:
+    _ensure_review_operator(service, review_id, user)
     try:
         task = service.reject(
             review_id,
-            decided_by=payload.decided_by,
+            decided_by=user.username,
             note=payload.note,
         )
     except KeyError as exc:

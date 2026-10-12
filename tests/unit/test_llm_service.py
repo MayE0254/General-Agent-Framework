@@ -77,6 +77,35 @@ def test_service_complete_returns_parsed_response() -> None:
     assert response.latency_ms >= 0
 
 
+def test_service_forwards_extra_body_and_omits_it_when_unset() -> None:
+    # extra_body is LiteLLM's escape hatch for provider switches the OpenAI
+    # schema has no field for (DeepSeek's thinking/disabled).  Unset has to send
+    # nothing at all: a stray default would push one vendor's field at another
+    # vendor's endpoint.
+    seen: list[dict] = []
+
+    async def _capture(kwargs: dict) -> object:
+        seen.append(kwargs)
+        return await _fake_completion(kwargs)
+
+    service = LLMService(_settings(api_key="sk-real"), completion_fn=_capture)
+    messages = [LLMMessage(role=LLMRole.USER, content="hi")]
+
+    asyncio.run(service.complete(LLMRequest(model="gpt-test", messages=messages)))
+    asyncio.run(
+        service.complete(
+            LLMRequest(
+                model="gpt-test",
+                messages=messages,
+                extra_body={"thinking": {"type": "disabled"}},
+            )
+        )
+    )
+
+    assert "extra_body" not in seen[0]
+    assert seen[1]["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
 def test_service_maps_unexpected_response_to_llm_error() -> None:
     async def _broken(kwargs: dict) -> object:
         class _Empty:
@@ -191,7 +220,7 @@ def test_service_routes_to_named_provider_and_overrides_model() -> None:
                 "deepseek": {
                     "api_base": "https://api.deepseek.com",
                     "api_key": "sk-deepseek",
-                    "model": "deepseek/deepseek-chat",
+                    "model": "deepseek/deepseek-v4-flash",
                 }
             },
         ),
@@ -208,8 +237,8 @@ def test_service_routes_to_named_provider_and_overrides_model() -> None:
         )
     )
 
-    assert response.model == "deepseek/deepseek-chat"
-    assert captured["model"] == "deepseek/deepseek-chat"
+    assert response.model == "deepseek/deepseek-v4-flash"
+    assert captured["model"] == "deepseek/deepseek-v4-flash"
     assert captured["api_key"] == "sk-deepseek"
     assert captured["api_base"] == "https://api.deepseek.com"
 
@@ -329,7 +358,7 @@ def test_service_falls_back_to_requested_model_for_cost_lookup() -> None:
         _settings(
             api_key="sk-real",
             pricing={
-                "deepseek/deepseek-chat": {
+                "deepseek/deepseek-v4-flash": {
                     "input_per_million": 0.27,
                     "output_per_million": 1.10,
                 }
@@ -341,7 +370,7 @@ def test_service_falls_back_to_requested_model_for_cost_lookup() -> None:
     response = asyncio.run(
         service.complete(
             LLMRequest(
-                model="deepseek/deepseek-chat",
+                model="deepseek/deepseek-v4-flash",
                 messages=[LLMMessage(role=LLMRole.USER, content="cost me")],
             )
         )

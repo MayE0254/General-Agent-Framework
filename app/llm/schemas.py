@@ -29,6 +29,13 @@ class LLMRequest(BaseModel):
     messages: list[LLMMessage] = Field(..., min_length=1)
     temperature: float = Field(default=0.2, ge=0.0, le=2.0)
     max_tokens: int | None = Field(default=None, ge=1)
+    # Provider-specific passthrough, forwarded verbatim by LiteLLM.  It exists
+    # for switches the OpenAI schema has no field for -- e.g. DeepSeek's
+    # ``{"thinking": {"type": "disabled"}}``: generation does not need
+    # deliberation, and a thinking chain shares ``max_tokens`` with the answer,
+    # so leaving it on burns the output budget and the latency without changing
+    # the answer.  Unset means "send nothing", never "send a default".
+    extra_body: dict[str, Any] | None = None
     timeout_seconds: int = Field(default=60, ge=1, le=600)
     # Optional named provider (from [llm].providers) for multi-model routing.
     # When unset the default [llm] block is used.
@@ -40,6 +47,9 @@ class LLMRequest(BaseModel):
     workflow_id: str | None = Field(default=None, max_length=128)
     trace_id: str | None = Field(default=None, max_length=128)
     agent_id: str | None = Field(default=None, max_length=64)
+    # Who the call is billed to. Left unset for beat-driven automation that
+    # legitimately has no user behind it.
+    user_id: str | None = Field(default=None, max_length=128)
 
 
 class LLMUsage(BaseModel):
@@ -55,6 +65,11 @@ class LLMResponse(BaseModel):
 
     model: str = Field(..., min_length=1, max_length=128)
     content: str = Field(default="", max_length=500_000)
+    # Why the model stopped ("stop", "length", "tool_calls", ...).  Without it an
+    # empty or half-sentence answer is indistinguishable from a complete one:
+    # "length" is the provider saying the ``max_tokens`` cap cut the answer off.
+    # Empty means the provider never reported one, not "stopped normally".
+    finish_reason: str = Field(default="", max_length=64)
     usage: LLMUsage = Field(default_factory=LLMUsage)
     latency_ms: int = Field(default=0, ge=0)
     cost_usd: float = Field(default=0.0, ge=0.0)
@@ -80,6 +95,7 @@ class LLMCallAudit(BaseModel):
     workflow_id: str | None = None
     trace_id: str | None = None
     agent_id: str | None = None
+    user_id: str | None = None
     model: str = Field(..., min_length=1, max_length=128)
     status: str = Field(..., pattern="^(success|failed)$")
     prompt_tokens: int = Field(default=0, ge=0)

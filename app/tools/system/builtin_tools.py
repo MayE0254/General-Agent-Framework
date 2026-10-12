@@ -7,6 +7,8 @@ from urllib.parse import urlparse
 import httpx
 
 from app.knowledge import InMemoryKnowledgeRetriever
+from app.knowledge.base import BaseKnowledgeRetriever
+from app.core import ResourceNotReadyError
 from app.tools.base import BaseTool
 from app.tools.schemas import (
     ToolContext,
@@ -29,7 +31,7 @@ class KnowledgeSearchTool(BaseTool):
 
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config=config)
-        self._retriever: InMemoryKnowledgeRetriever | None = None
+        self._retriever: BaseKnowledgeRetriever | None = self._config.get("retriever_instance")
 
     @classmethod
     def build_metadata(cls) -> ToolMetadata:
@@ -39,8 +41,10 @@ class KnowledgeSearchTool(BaseTool):
             tags=["core", "knowledge"],
         )
 
-    def _get_retriever(self) -> InMemoryKnowledgeRetriever:
+    def _get_retriever(self) -> BaseKnowledgeRetriever:
         if self._retriever is None:
+            if self._config.get("retriever", "inmemory") != "inmemory":
+                raise ResourceNotReadyError("Configured knowledge retriever is not wired.")
             self._retriever = InMemoryKnowledgeRetriever(
                 self._config.get("documents") or [],
                 min_score=float(self._config.get("min_score", 0.05)),

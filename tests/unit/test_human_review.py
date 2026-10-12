@@ -247,7 +247,6 @@ def _run_review_pending_workflow(api_client, request_id: str) -> None:
             "request_id": request_id,
             "initial_agent_id": "planner_agent",
             "session_id": "session-api-review",
-            "user_id": "user-api-review",
             "input_text": "this task needs human approval",
             "structured_input": {"requires_human": True},
         },
@@ -334,7 +333,9 @@ def test_review_service_creates_chained_review_with_source() -> None:
         session.close()
 
 
-def test_review_api_endpoints(api_client) -> None:
+def test_review_api_endpoints(api_client, as_user) -> None:
+    # Decisions belong to the submitting user: act as that member.
+    as_user(user_id="user-review-decide", username="tester")
     request_id = f"api-review-{uuid.uuid4().hex[:8]}"
     _run_review_pending_workflow(api_client, request_id)
 
@@ -358,10 +359,11 @@ def test_review_api_endpoints(api_client) -> None:
 
     approved = api_client.post(
         f"/api/v1/runtime/reviews/{review_id}/approve",
-        json={"decided_by": "tester", "note": "approved in test"},
+        json={"note": "approved in test"},
     )
     assert approved.status_code == 200
     assert approved.json()["review"]["status"] == "approved"
+    # The decider is taken from the session, never from the request body.
     assert approved.json()["review"]["decided_by"] == "tester"
     assert approved.json()["continuation"] is None
     assert approved.json()["continuation_run"] is None
@@ -377,7 +379,8 @@ def test_review_api_endpoints(api_client) -> None:
     assert missing.status_code == 404
 
 
-def test_review_api_reject_and_sse(api_client) -> None:
+def test_review_api_reject_and_sse(api_client, as_user) -> None:
+    as_user(user_id="user-review-reject", username="rejecter")
     request_id = f"api-review-{uuid.uuid4().hex[:8]}"
     _run_review_pending_workflow(api_client, request_id)
 
@@ -395,7 +398,8 @@ def test_review_api_reject_and_sse(api_client) -> None:
     assert rejected.json()["status"] == "rejected"
 
 
-def test_review_api_approve_with_continuation(api_client) -> None:
+def test_review_api_approve_with_continuation(api_client, as_user) -> None:
+    as_user(user_id="user-review-continuation", username="continuer")
     request_id = f"api-review-{uuid.uuid4().hex[:8]}"
     _run_review_pending_workflow(api_client, request_id)
 
@@ -411,7 +415,6 @@ def test_review_api_approve_with_continuation(api_client) -> None:
     approved = api_client.post(
         f"/api/v1/runtime/reviews/{review['id']}/approve",
         json={
-            "decided_by": "tester",
             "note": "resume after review",
             "continuation": {
                 "request_id": f"{request_id}-continuation",

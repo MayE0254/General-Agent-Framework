@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from app.core import NotFoundError
 from app.models import AgentRunLog, LLMCallLog, TaskRunRecord, ToolCallLog, WorkflowRunRecord
 from app.repositories import RuntimeAuditRepository, WorkflowRunRepository
@@ -163,6 +165,9 @@ class RuntimeQueryService:
         agent_id: str | None = None,
         model: str | None = None,
         status: str | None = None,
+        user_id: str | None = None,
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> dict[str, object]:
@@ -171,6 +176,9 @@ class RuntimeQueryService:
             agent_id=agent_id,
             model=model,
             status=status,
+            user_id=user_id,
+            created_from=created_from,
+            created_to=created_to,
             limit=limit,
             offset=offset,
         )
@@ -184,6 +192,39 @@ class RuntimeQueryService:
                 "agent_id": agent_id,
                 "model": model,
                 "status": status,
+                "user_id": user_id,
+                "created_from": created_from,
+                "created_to": created_to,
+            },
+        }
+
+    def get_llm_usage_report(
+        self,
+        *,
+        user_id: str | None = None,
+        model: str | None = None,
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
+    ) -> dict[str, object]:
+        """Token/cost usage rolled up by model, by user and by user+model.
+
+        The repository returns raw buckets; the report keeps the same shape as
+        every other query result here (``filters`` alongside the data) so the
+        console can render the active filter set verbatim.
+        """
+        report = self._repository.aggregate_llm_usage(
+            user_id=user_id,
+            model=model,
+            created_from=created_from,
+            created_to=created_to,
+        )
+        return {
+            **report,
+            "filters": {
+                "user_id": user_id,
+                "model": model,
+                "created_from": created_from,
+                "created_to": created_to,
             },
         }
 
@@ -195,6 +236,7 @@ class RuntimeQueryService:
         *,
         request_id: str | None = None,
         status: str | None = None,
+        user_id: str | None = None,
         limit: int = 20,
         offset: int = 0,
     ) -> dict[str, object]:
@@ -206,6 +248,7 @@ class RuntimeQueryService:
         items, total = self._workflow_run_repository.list_workflow_runs(
             request_id=request_id,
             status=status,
+            user_id=user_id,
             limit=limit,
             offset=offset,
         )
@@ -217,6 +260,7 @@ class RuntimeQueryService:
             "filters": {
                 "request_id": request_id,
                 "status": status,
+                "user_id": user_id,
             },
         }
 

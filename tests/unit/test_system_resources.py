@@ -41,25 +41,13 @@ def test_system_resources_endpoint_returns_database_runtime_status(
     assert "redis-test-password" not in body["redis"]["config"]["url"]
 
 
-def test_system_dashboard_endpoint_returns_html(
+def test_system_dashboard_endpoint_redirects_to_console(
     api_client: TestClient,
 ) -> None:
-    response = api_client.get("/api/v1/system/dashboard")
+    response = api_client.get("/api/v1/system/dashboard", follow_redirects=False)
 
-    assert response.status_code == 200
-    assert "text/html" in response.headers["content-type"]
-    assert "MultiAgent Runtime Console" in response.text
-    assert 'const apiPrefix = "/api/v1"' in response.text
-    assert "/runtime/reviews/events" in response.text
-    assert "提交异步工作流" in response.text
-    assert "最近异步提交" in response.text
-    assert "/system/workers" in response.text
-    assert "tool-calls-failed-only" in response.text
-    assert "tool-calls-retryable-only" in response.text
-    assert "function renderToolCalls" in response.text
-    assert "function renderReviewRelation" in response.text
-    assert 'id="review-relation"' in response.text
-    assert "data-source-review-id" in response.text
+    assert response.status_code == 307
+    assert response.headers["location"] == "/console/"
 
 
 def test_system_workers_endpoint_returns_worker_snapshot(
@@ -69,7 +57,7 @@ def test_system_workers_endpoint_returns_worker_snapshot(
     monkeypatch.setattr(
         system_module,
         "_normalize_worker_snapshot",
-        lambda: {
+        lambda *args, **kwargs: {
             "status": "ready",
             "message": "Detected 1 online worker(s).",
             "workers": [

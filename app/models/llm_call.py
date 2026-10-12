@@ -15,6 +15,10 @@ class LLMCallLog(TimestampMixin, Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     request_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    # Who paid for the call. Nullable because automation (beat-driven
+    # workflows) legitimately has no user; those calls report under the
+    # "system" bucket in the usage report.
+    user_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     session_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     workflow_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     trace_id: Mapped[str | None] = mapped_column(String(128), nullable=True)

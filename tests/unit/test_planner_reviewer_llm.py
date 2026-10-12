@@ -41,7 +41,7 @@ def _fake_llm_service(content: str) -> LLMService:
                 "deepseek": {
                     "api_base": "https://api.deepseek.com",
                     "api_key": "sk-deepseek",
-                    "model": "deepseek/deepseek-chat",
+                    "model": "deepseek/deepseek-v4-flash",
                 }
             },
         ),
@@ -93,7 +93,7 @@ def test_planner_uses_llm_when_configured() -> None:
     )
 
     assert result.output["planning_source"] == "llm"
-    assert result.output["planning_model"] == "deepseek/deepseek-chat"
+    assert result.output["planning_model"] == "deepseek/deepseek-v4-flash"
     assert result.output["plan_steps"] == ["step 1", "step 2"]
     assert [tc.tool_name for tc in result.tool_calls] == ["knowledge_search"]
     assert result.tool_calls[0].arguments == {"query": "metrics"}
@@ -184,7 +184,7 @@ def test_planner_request_profile_overrides_agent_model_and_provider() -> None:
                 "deepseek": {
                     "api_base": "https://api.deepseek.com",
                     "api_key": "sk-deepseek",
-                    "model": "deepseek/deepseek-chat",
+                    "model": "deepseek/deepseek-v4-flash",
                 }
             },
         ),
@@ -196,7 +196,7 @@ def test_planner_request_profile_overrides_agent_model_and_provider() -> None:
                 llm_service=service,
                 llm_profile=LLMProfile(
                     provider="deepseek",
-                    model="deepseek/deepseek-chat",
+                    model="deepseek/deepseek-v4-flash",
                     temperature=0.3,
                 ),
             )
@@ -204,8 +204,8 @@ def test_planner_request_profile_overrides_agent_model_and_provider() -> None:
     )
 
     assert result.output["planning_source"] == "llm"
-    assert result.output["planning_model"] == "deepseek/deepseek-chat"
-    assert captured["model"] == "deepseek/deepseek-chat"
+    assert result.output["planning_model"] == "deepseek/deepseek-v4-flash"
+    assert captured["model"] == "deepseek/deepseek-v4-flash"
     assert captured["api_key"] == "sk-deepseek"
     assert captured["temperature"] == 0.3
 
@@ -247,7 +247,7 @@ def test_reviewer_uses_llm_when_configured_and_passes() -> None:
     )
 
     assert result.output["review_source"] == "llm"
-    assert result.output["review_model"] == "deepseek/deepseek-chat"
+    assert result.output["review_model"] == "deepseek/deepseek-v4-flash"
     assert result.output["review_feedback"] == "looks good"
     assert result.status == AgentExecutionStatus.SUCCESS
     assert result.requires_human is False
@@ -323,7 +323,7 @@ def test_executor_uses_llm_when_configured() -> None:
     )
 
     assert result.output["execution_source"] == "llm"
-    assert result.output["execution_model"] == "deepseek/deepseek-chat"
+    assert result.output["execution_model"] == "deepseek/deepseek-v4-flash"
     assert result.output["result"] == "REST and gRPC differ in X."
     assert result.output["knowledge_refs"] == ["r1"]
     assert result.next_agent_id == "reviewer_agent"

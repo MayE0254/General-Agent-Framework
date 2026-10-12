@@ -92,3 +92,23 @@ def business_beat_entries() -> dict[str, dict[str, Any]]:
             continue
         entries.update(provider())
     return entries
+
+
+def business_automation_agents() -> list[dict[str, Any]]:
+    """Collect ``automation_manifest()`` declarations from business packages.
+
+    Automation agents are the scheduled (beat-driven), non-personal agents
+    shown read-only on the console ``/automation`` page.
+    """
+    agents: list[dict[str, Any]] = []
+    for package in iter_business_packages():
+        provider = getattr(package, "automation_manifest", None)
+        if provider is None:
+            continue
+        try:
+            agents.extend(provider())
+        except Exception as exc:  # noqa: BLE001 - plugin isolation
+            logger.warning(
+                "Skipping automation manifest of %s: %s", package.__name__, exc
+            )
+    return agents

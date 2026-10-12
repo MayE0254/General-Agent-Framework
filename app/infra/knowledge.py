@@ -9,4 +9,5 @@ def get_vectorstore_configs(settings: Settings | None = None) -> dict[str, dict[
     return {
         "pgvector": current_settings.knowledge.pgvector.model_dump(),
         "milvus": current_settings.knowledge.milvus.model_dump(),
+        "graph": current_settings.knowledge.graph.model_dump(),
     }

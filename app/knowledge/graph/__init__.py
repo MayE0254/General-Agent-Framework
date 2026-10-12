@@ -1,0 +1,1 @@
+"""Neo4j knowledge-graph adapters (lightweight structural scaffold)."""

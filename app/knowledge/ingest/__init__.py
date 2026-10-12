@@ -1,0 +1,1 @@
+"""Knowledge ingestion pipeline: parsing, chunking, embedding, indexing."""

@@ -22,14 +22,31 @@ redis>=6.2,<7.0
 celery>=5.5,<6.0
 
 # Knowledge base and vector stores
-pgvector>=0.3,<1.0
-pymilvus>=2.5,<3.0
+pgvector>=0.3,<1.0   # DEPRECATED (phase-2 dropped it as the vector backend; kept for historical config compatibility)
+pymilvus>=2.5,<3.0   # Milvus vector store (primary, deployed on a separate host)
+neo4j>=5.26,<6.0     # Neo4j knowledge-graph driver for Graph RAG expansion (phase-P2 implementation)
 
 # Document parsing and data processing
 unstructured>=0.18,<1.0
 pymupdf>=1.26,<2.0
 python-docx>=1.2,<2.0
 pandas>=2.3,<3.0
+openpyxl>=3.1,<4.0
+
+# Knowledge retrieval: local Chinese embedding + cross-encoder rerank, BM25.
+# sentence-transformers drags torch; the hybrid retrieval path needs it.
+jieba>=0.42,<1.0
+sentence-transformers>=3.0,<5.0
+
+# Offline RAGAS evaluation of the retrieval + generation chain.  Pinned exactly
+# and to the 0.2.x line on purpose: ragas>=0.3 requires langchain-core>=1 and
+# langgraph>=1, and langgraph 1.x is a breaking major for
+# app/orchestrator/langgraph_runner.py.  Installing ragas without this pin is
+# what pulled langchain-core 0.3.86 -> 1.6.4 and langgraph 0.6.11 -> 1.2.12.
+# Pinning ragas (rather than its langchain-* dependencies) is enough: they are
+# left unpinned upstream, so the langchain-core<1.0 constraint above is what
+# forces pip onto the 0.3.x line for all of them.
+ragas==0.2.15
 
 # Observability
 langfuse>=3.2,<4.0

@@ -153,11 +153,13 @@ class HumanReviewService:
         self,
         *,
         status: str | None = None,
+        user_id: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> dict[str, Any]:
         items, total = self._repository.list(
             status=status,
+            user_id=user_id,
             limit=limit,
             offset=offset,
         )
@@ -185,6 +187,10 @@ class HumanReviewService:
         source_structured_input = copy.deepcopy(
             snapshot.get("structured_input") or {}
         )
+        # The human has now decided on this run: drop the "requires_human"
+        # hard-override flag, otherwise the resumed reviewer immediately
+        # raises another review round for the same output (approve loop).
+        source_structured_input.pop("requires_human", None)
         source_structured_input.update(continuation.structured_input)
 
         source_shared_state = copy.deepcopy(snapshot.get("shared_state") or {})

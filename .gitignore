@@ -8,6 +8,9 @@ venv/
 
 # Secrets & local env
 .env
+.env.*
+*.pem
+*.key
 
 # Runtime artifacts
 logs/
@@ -22,6 +25,14 @@ celerybeat-schedule-wal
 # app/business/__init__.py; a checkout without them is pure infrastructure.
 app/business/*/
 
+# Local data assets: knowledge corpus (fiscal/tax regulations), ingestion
+# intermediates, exports. Never committed — may contain unpublished material.
+data/
+
+# Locally downloaded offline ML models (bge embedding / reranker, ~1.5 GB).
+# Downloaded on demand via scripts/tests; never committed.
+models/
+
 # Local design blueprint (working notes, not part of the distributed repo)
 通用多Agent框架技术栈建议.md
 
@@ -29,7 +40,15 @@ app/business/*/
 docs/
 configs/README.md
 migrations/versions/README.md
+debug-*.md
+code-history/
+
+# Machine-specific service launchers
+scripts/start_all.cmd
+scripts/start_all.ps1
 
 # OS / IDE
 .DS_Store
 Thumbs.db
+.vscode/
+.trae/

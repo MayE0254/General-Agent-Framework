@@ -7,6 +7,7 @@ construction in one place prevents the two entry points from drifting apart.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -14,14 +15,17 @@ from app.agents.registry import AgentRegistry, create_default_registry
 from app.agents.registry.routing import sync_domain_routes
 from app.business import register_business_agents
 from app.core import Settings, get_settings
+from app.core.settings import ModelPricingSettings
 from app.infra import AppResources, close_app_resources, initialize_app_resources
 from app.llm import LLMService
+from app.knowledge.factory import RuntimeKnowledgeRetriever
 from app.llm.factory import create_llm_service
 from app.observability import create_tracer
 from app.orchestrator import BaseOrchestrator, create_orchestrator
 from app.repositories import (
     HumanReviewRepository,
     MemoryRepository,
+    ModelPoolRepository,
     RuntimeAuditRepository,
     WorkflowRunRepository,
 )
@@ -31,6 +35,7 @@ from app.services import (
     RuntimeRecordService,
     WorkflowRunService,
 )
+from app.services.model_pool_service import entry_to_pricing
 from app.tools import ToolExecutor, ToolRegistry, create_default_tool_registry
 
 
@@ -50,8 +55,11 @@ class RuntimeStack:
     memory_service: MemoryService | None
     human_review_service: HumanReviewService | None
     tracer: Any | None = None
+    knowledge_retriever: RuntimeKnowledgeRetriever | None = None
 
     def close(self) -> None:
+        if self.knowledge_retriever is not None:
+            self.knowledge_retriever.close()
         for service in (
             self.runtime_record_service,
             self.memory_service,
@@ -62,6 +70,36 @@ class RuntimeStack:
         close_app_resources(self.resources)
 
 
+def build_model_pricing_resolver(
+    resources: AppResources,
+) -> Callable[[str], ModelPricingSettings | None] | None:
+    """Price a resolved model string through the console model pool.
+
+    The pool is the only place an operator can price a model added at runtime
+    without a redeploy, so ``LLMService`` asks it first and falls back to
+    ``[llm].pricing``. An entry whose unit prices are both zero counts as "no
+    opinion" rather than free of charge, so creating an entry cannot silently
+    zero out a price that is configured in the settings file.
+    """
+    session_factory = resources.database_session_factory
+    if session_factory is None:
+        return None
+
+    def resolve(model: str) -> ModelPricingSettings | None:
+        session = session_factory()
+        try:
+            entry = ModelPoolRepository(session).get_entry_by_model(model)
+        finally:
+            session.close()
+        if entry is None:
+            return None
+        if entry.input_per_million <= 0 and entry.output_per_million <= 0:
+            return None
+        return entry_to_pricing(entry)
+
+    return resolve
+
+
 def build_runtime_stack(settings: Settings | None = None) -> RuntimeStack:
     """Construct the full runtime stack (resources -> services -> orchestrator).
 
@@ -70,11 +108,19 @@ def build_runtime_stack(settings: Settings | None = None) -> RuntimeStack:
     without persistence (preview mode).
     """
     current_settings = settings or get_settings()
+    if current_settings.knowledge.chat.enabled and current_settings.knowledge.retriever != "hybrid":
+        raise ValueError("Knowledge chat requires the single-hop hybrid retriever.")
+    knowledge_retriever = (
+        RuntimeKnowledgeRetriever(current_settings.knowledge)
+        if current_settings.knowledge.retriever == "hybrid"
+        else None
+    )
     resources = initialize_app_resources(current_settings)
     agent_registry = create_default_registry()
     tool_registry = create_default_tool_registry(
         tool_settings=current_settings.tools,
         knowledge_settings=current_settings.knowledge,
+        knowledge_retriever=knowledge_retriever,
     )
     # Business agents (vertical domains) + their routing registration.
     # Business packages under app/business are optional plugins: each one
@@ -112,6 +158,7 @@ def build_runtime_stack(settings: Settings | None = None) -> RuntimeStack:
         current_settings,
         tracer=tracer,
         audit_recorder=llm_audit_recorder,
+        pricing_resolver=build_model_pricing_resolver(resources),
     )
     if (
         resources.database.status.value == "ready"
@@ -149,4 +196,5 @@ def build_runtime_stack(settings: Settings | None = None) -> RuntimeStack:
         memory_service=memory_service,
         human_review_service=human_review_service,
         tracer=tracer,
+        knowledge_retriever=knowledge_retriever,
     )

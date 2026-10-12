@@ -6,8 +6,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from celery.result import AsyncResult
 
 from app.api.dependencies import (
+    AuthenticatedUser,
     get_app_settings,
     get_async_workflow_submission_service,
+    get_current_user,
     get_orchestrator,
 )
 from app.core import NotFoundError
@@ -108,12 +110,13 @@ def _derive_review_id(result_payload: dict | None) -> str | None:
 async def run_workflow(
     request: WorkflowRunRequest,
     orchestrator: SimpleOrchestrator = Depends(get_orchestrator),
+    user: AuthenticatedUser = Depends(get_current_user),
 ) -> WorkflowRunResponse:
     state = OrchestratorState(
         request_id=request.request_id,
         initial_agent_id=request.initial_agent_id,
         session_id=request.session_id,
-        user_id=request.user_id,
+        user_id=user.id,
         workflow_id=request.workflow_id,
         trace_id=request.trace_id,
         input_text=request.input_text,
@@ -151,8 +154,12 @@ async def run_workflow_async(
     submission_service: AsyncWorkflowSubmissionService = Depends(
         get_async_workflow_submission_service
     ),
+    user: AuthenticatedUser = Depends(get_current_user),
 ) -> WorkflowRunAsyncResponse:
     """Submit a workflow to the Celery queue and return immediately."""
+    # Ownership is derived from the authenticated session, never from the
+    # client-supplied payload.
+    request.user_id = user.id
     redis_probe = probe_redis_connection(settings)
     if not redis_probe["reachable"]:
         detail = _REDIS_UNAVAILABLE
@@ -202,6 +209,7 @@ async def get_workflow_task_status(
     submission_service: AsyncWorkflowSubmissionService = Depends(
         get_async_workflow_submission_service
     ),
+    user: AuthenticatedUser = Depends(get_current_user),
 ) -> WorkflowTaskStatusResponse:
     """Poll the result of an async workflow submission."""
     record = None
@@ -209,6 +217,10 @@ async def get_workflow_task_status(
         try:
             record = submission_service.refresh_submission_status(task_id)
         except NotFoundError:
+            if not user.is_admin:
+                raise HTTPException(
+                    status_code=404, detail="Async submission was not found."
+                )
             async_result = AsyncResult(task_id, app=celery_app)
             status = async_result.status.lower()
             return WorkflowTaskStatusResponse(
@@ -292,12 +304,15 @@ async def list_async_workflow_submissions(
     submission_service: AsyncWorkflowSubmissionService = Depends(
         get_async_workflow_submission_service
     ),
+    user: AuthenticatedUser = Depends(get_current_user),
 ) -> AsyncWorkflowSubmissionListResponse:
+    # Non-admin users are always scoped to their own submissions.
+    effective_user_id = user.id if not user.is_admin else user_id
     result = submission_service.list_submissions(
         status=status,
         request_id=request_id,
         session_id=session_id,
-        user_id=user_id,
+        user_id=effective_user_id,
         limit=limit,
         offset=offset,
         refresh_statuses=is_redis_reachable(settings),

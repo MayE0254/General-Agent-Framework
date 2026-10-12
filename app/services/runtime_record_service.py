@@ -185,6 +185,7 @@ class RuntimeRecordService:
         return LLMCallLog(
             id=str(uuid4()),
             request_id=audit.request_id,
+            user_id=audit.user_id,
             session_id=audit.session_id,
             workflow_id=audit.workflow_id,
             trace_id=audit.trace_id,

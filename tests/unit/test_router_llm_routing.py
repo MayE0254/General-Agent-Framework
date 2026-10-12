@@ -42,7 +42,7 @@ def _fake_llm_service(content: str) -> LLMService:
                 "deepseek": {
                     "api_base": "https://api.deepseek.com",
                     "api_key": "sk-deepseek",
-                    "model": "deepseek/deepseek-chat",
+                    "model": "deepseek/deepseek-v4-flash",
                 }
             },
         ),
@@ -83,7 +83,7 @@ def test_router_uses_llm_when_configured() -> None:
 
     assert result.next_agent_id == "knowledge_agent"
     assert result.output["routing_source"] == "llm"
-    assert result.output["routing_model"] == "deepseek/deepseek-chat"
+    assert result.output["routing_model"] == "deepseek/deepseek-v4-flash"
 
 
 def test_router_falls_back_when_llm_output_is_invalid() -> None:

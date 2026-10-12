@@ -499,6 +499,51 @@ class ReviewerAgent(BaseAgent):
         )
 
     async def _run(self, context: AgentContext) -> AgentResult:
+        # A continuation run resumed after a human decision: the human already
+        # made the final call, so the reviewer must not re-raise another review
+        # round for the same output (that caused an approve -> new review loop).
+        review_context = context.shared_state.get("review_context") or {}
+        if review_context.get("source_review_id"):
+            return AgentResult(
+                agent_id=self.metadata.agent_id,
+                status=AgentExecutionStatus.SUCCESS,
+                summary="Human decision recorded; skipping re-review.",
+                output={
+                    "review_passed": True,
+                    "review_source": "human_decision",
+                    "reviewed_by": review_context.get("approved_by"),
+                },
+                messages=["ReviewerAgent skipped: human already decided this run."],
+                requires_human=False,
+            )
+        # Draft-only content ops (e.g. WeChat article landing in the private
+        # draft box) never needs a human gate: the draft already exists by the
+        # time review runs, so a post-hoc approval has no protective effect.
+        # Real publishing (submit_publish=True) keeps the normal review path,
+        # and future agents that need a gate should pause BEFORE producing
+        # their final artifact instead.
+        content_ops_output = (
+            context.shared_state.get("agent_outputs", {}).get("content_ops_agent")
+            or {}
+        )
+        if (
+            content_ops_output.get("submit_publish") is False
+            and not context.structured_input.get("requires_human")
+        ):
+            return AgentResult(
+                agent_id=self.metadata.agent_id,
+                status=AgentExecutionStatus.SUCCESS,
+                summary="Draft-only content run; human review not required.",
+                output={
+                    "review_passed": True,
+                    "review_source": "policy_draft_only",
+                },
+                messages=[
+                    "ReviewerAgent skipped: draft-only content ops output "
+                    "does not require human approval."
+                ],
+                requires_human=False,
+            )
         # Prefer an LLM-driven review when a configured service is injected;
         # fall back to deterministic rules on any failure.
         llm_review = await self._try_llm_review(context)

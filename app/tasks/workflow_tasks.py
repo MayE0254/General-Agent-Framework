@@ -10,8 +10,8 @@ from __future__ import annotations
 from typing import Any
 from traceback import format_exc
 
-from app.orchestrator import OrchestratorState
-from app.repositories import AsyncWorkflowSubmissionRepository
+from app.orchestrator import OrchestratorState, WorkflowStatus
+from app.repositories import AsyncWorkflowSubmissionRepository, WorkflowRunRepository
 from app.tasks.celery_app import celery_app
 
 
@@ -85,6 +85,41 @@ def _update_async_submission(
         repository.close()
 
 
+def _find_finished_run(request_id: str) -> dict[str, Any] | None:
+    """Return the stored outcome of an already-finished run for ``request_id``.
+
+    ``request_id`` is a unique column, so a message the broker re-delivers
+    (worker died before acking, or the visibility timeout expired) must not
+    redo work that already completed — it would either duplicate the side
+    effects or trip the unique constraint. Returns ``None`` when the run never
+    finished, which is exactly when retrying is the right thing to do.
+    """
+    stack = _get_runtime()
+    resources = getattr(stack, "resources", None)
+    session_factory = getattr(resources, "database_session_factory", None)
+    if session_factory is None:
+        return None
+
+    session = session_factory()
+    try:
+        record = WorkflowRunRepository(session).get_by_request_id(request_id)
+        if record is None:
+            return None
+        metadata = record.metadata_payload or {}
+        return {
+            "request_id": record.request_id,
+            "status": record.status,
+            "terminal_reason": metadata.get("terminal_reason"),
+            "review_id": metadata.get("review_id"),
+            "execution_path": record.execution_path or [],
+            "errors": record.errors or [],
+            "final_result": None,
+            "duplicate": True,
+        }
+    finally:
+        session.close()
+
+
 @celery_app.task(
     name="workflow.run",
     bind=True,
@@ -99,6 +134,17 @@ def run_workflow_task(self, request: dict[str, Any]) -> dict[str, Any]:
     stack = _get_runtime()
     state = build_orchestrator_state(request)
     task_id = str(self.request.id)
+
+    duplicate = _find_finished_run(state.request_id)
+    if duplicate is not None:
+        _update_async_submission(
+            task_id,
+            status="success",
+            message="workflow skipped: request_id already has a finished run",
+            result_payload=duplicate,
+        )
+        return duplicate
+
     _update_async_submission(
         task_id,
         status="started",
@@ -124,12 +170,35 @@ def run_workflow_task(self, request: dict[str, Any]) -> dict[str, Any]:
                 else None
             ),
         }
-        _update_async_submission(
-            task_id,
-            status="success",
-            message="workflow completed successfully",
-            result_payload=payload,
-        )
+        # Keep the submission ledger consistent with the orchestrator's
+        # terminal state: a workflow that ends FAILED is a failed submission
+        # even though the Celery execution itself completed without raising.
+        if result_state.status == WorkflowStatus.FAILED:
+            error_digest = "; ".join(result_state.errors)[-500:]
+            terminal_reason = (
+                result_state.terminal_reason.value
+                if result_state.terminal_reason is not None
+                else "unknown"
+            )
+            message = (
+                "workflow ended with status failed "
+                f"(terminal_reason={terminal_reason})"
+            )
+            if error_digest:
+                message = f"{message}: {error_digest}"
+            _update_async_submission(
+                task_id,
+                status="failure",
+                message=message,
+                result_payload=payload,
+            )
+        else:
+            _update_async_submission(
+                task_id,
+                status="success",
+                message="workflow completed successfully",
+                result_payload=payload,
+            )
         return payload
     except Exception:
         _update_async_submission(

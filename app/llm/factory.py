@@ -10,6 +10,7 @@ def create_llm_service(
     completion_fn=None,
     tracer=None,
     audit_recorder=None,
+    pricing_resolver=None,
 ) -> LLMService:
     current_settings = settings or get_settings()
     return LLMService(
@@ -17,4 +18,5 @@ def create_llm_service(
         completion_fn=completion_fn,
         tracer=tracer,
         audit_recorder=audit_recorder,
+        pricing_resolver=pricing_resolver,
     )

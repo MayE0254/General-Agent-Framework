@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from time import perf_counter
+from typing import Any
 
 from app.core import Settings, get_settings
 
@@ -55,6 +56,22 @@ def get_redis_connection_config(settings: Settings | None = None) -> dict[str, o
         "connect_timeout_seconds": redis_settings.connect_timeout_seconds,
         "socket_timeout_seconds": redis_settings.socket_timeout_seconds,
     }
+
+
+def build_broker_client(settings: Settings | None = None) -> Any:
+    """Redis client bound to the Celery broker DB.
+
+    Used for liveness/backlog probes (worker heartbeats, unacked messages),
+    which must look at the same keyspace the broker itself uses.
+    """
+    import redis as redis_client
+
+    current_settings = settings or get_settings()
+    return redis_client.Redis(
+        **current_settings.redis.build_client_kwargs(
+            database_index=current_settings.celery.broker_db
+        )
+    )
 
 
 def get_celery_redis_urls(settings: Settings | None = None) -> dict[str, str]:

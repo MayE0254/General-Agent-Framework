@@ -31,12 +31,15 @@ class HumanReviewRepository:
         self,
         *,
         status: str | None = None,
+        user_id: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[HumanReviewTask], int]:
         filters = []
         if status:
             filters.append(HumanReviewTask.status == status)
+        if user_id:
+            filters.append(HumanReviewTask.user_id == user_id)
         total = int(
             self._session.scalar(
                 select(func.count())

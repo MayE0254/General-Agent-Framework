@@ -27,7 +27,7 @@ max_overflow = 20
 connect_timeout_seconds = 3
 
 [redis]
-host = "192.168.1.104"
+host = "127.0.0.1"
 port = 6379
 db = 0
 # Redis 8 ACL login: username/password can both come from local env vars.
@@ -43,12 +43,23 @@ result_db = 2
 task_default_queue = "multiagent"
 # Leave empty to use the platform default (Windows -> solo, Linux/macOS -> prefork).
 worker_pool = ""
+# 取走但未确认（unacked）的消息在该秒数后被重新投递给另一个 worker。
+# 硬约束：必须大于"单个任务的最大运行时长"，否则正常的长任务会被重复执行。
+# 单篇文章任务实测约 5-6 分钟，故取 15 分钟。
+visibility_timeout_seconds = 900
+# worker 心跳线程（任务线程之外）的写入间隔与判定阈值。
+worker_heartbeat_interval_seconds = 30
+# 必须大于"单个任务最大时长 + 心跳间隔"，否则忙于长任务的健康 worker 会被误判。
+worker_heartbeat_stale_seconds = 300
+# 队列积压且无健康心跳持续该秒数后，API 看门狗会补一个 worker（自愈）。
+queue_stall_seconds = 300
+worker_auto_recover = true
 
 [llm]
 provider = "deepseek"
-# LiteLLM requires provider-prefixed model names ("deepseek/deepseek-chat"),
+# LiteLLM requires provider-prefixed model names ("deepseek/deepseek-v4-flash"),
 # otherwise it fails with "LLM Provider NOT provided".
-model = "deepseek/deepseek-chat"
+model = "deepseek/deepseek-v4-flash"
 api_base = "https://api.deepseek.com"
 # api_key references the DEEPSEEK_API_KEY environment variable so secrets
 # never live in the committed config. Loaded by Settings.from_toml.
@@ -61,21 +72,233 @@ retry_max_seconds = 8.0
 # Named providers for multi-model routing. A request can select one by
 # passing its name as LLMRequest.provider (agents/orchestrators pick a
 # profile per task type, or end users override via request llm_profile).
+#
+# 命名 provider 只声明"接入点 + 凭证"，**不要在这里钉死 model**：
+# LLMService._resolve_provider 在 provider 声明了 model 时会用它覆盖请求里的模型，
+# 于是控制台模型池里选任何模型都会跑成同一个模型（自选模型静默失效）。
+# 模型名由选择方决定：池条目的 model 会随请求传下来。
 [llm.providers]
-deepseek = { api_base = "https://api.deepseek.com", api_key = "${DEEPSEEK_API_KEY}", model = "deepseek/deepseek-chat" }
-# openai = { api_base = "https://api.openai.com/v1", api_key = "${OPENAI_API_KEY}", model = "openai/gpt-4.1-mini" }
+deepseek = { api_base = "https://api.deepseek.com", api_key = "${DEEPSEEK_API_KEY}" }
+# 智谱 GLM：供 RAGAS 评判模型与实体/关系抽取使用。密钥只从环境变量读取，
+# 变量名固定为 ZHIPU_API_KEY（setx ZHIPU_API_KEY "<你的智谱 API Key>"）。
+# 端点取智谱国内站 OpenAI Chat Completions 兼容地址（GLM-5.3 官方文档给出）。
+zhipu = { api_base = "https://open.bigmodel.cn/api/paas/v4", api_key = "${ZHIPU_API_KEY}" }
+# openai = { api_base = "https://api.openai.com/v1", api_key = "${OPENAI_API_KEY}" }
 
 # Per-model token pricing (USD per 1M tokens) used for cost estimation.
 # Keys are the exact model strings passed to LiteLLM.
+# 模型池条目自带单价时优先生效；条目单价为 0 表示"未定价"，会落回这里。
 [llm.pricing]
-"deepseek/deepseek-chat" = { input_per_million = 0.27, output_per_million = 1.10 }
+# Flash-tier estimate; update once official v4-flash pricing is published.
+"deepseek/deepseek-v4-flash" = { input_per_million = 0.10, output_per_million = 0.40 }
+# 评判模型（GLM）的单价不在此登记：RAGAS 的评判调用走它自己的 LangChain 客户端，
+# 不经过 LLMService，因此 [llm].pricing 影响不到它——登记一行没人读的单价，
+# 只会让人误以为评测报告里的 cost_usd 含评判成本（实际只含被测生成腿）。
+
+[knowledge]
+# 中台与工作流共用已验证的单跳混合检索；图谱只在评测脚本中显式接入。
+retriever = "hybrid"
+chunk_snapshot = "data/knowledge/processed/chunks.jsonl"
+top_k = 5
+min_score = 0.05
+# 本地 embedding 与重排模型（sentence-transformers，离线）。
+# 路径解析相对进程工作目录；模型离线放置在 models/ 下；如网络可控也可改回 HF repo id
+# （如 "BAAI/bge-base-zh-v1.5"）。
+# embedding_dim 必须与 Milvus collection 维度一致（bge-base-zh-v1.5 => 768）。
+embedding_model = "models/bge-base-zh-v1.5"
+embedding_dim = 768
+reranker_model = "models/bge-reranker-base"
+# 混合检索 fusion：
+# 1) 召回：向量支与 BM25 支各取 hybrid_candidates 个候选；
+# 2) 初筛：用 RRF（Reciprocal Rank Fusion，只按名次合并，规避 cosine/BM25 量纲不可比）
+#    融合两腿，先按父块折叠同一条款的兄弟子块，再按源文档配额 max_chunks_per_document
+#    去重，最后按 prefusion_top_n 截断，控制进入 cross-encoder 的候选规模；
+# 3) 精排：cross-encoder 对初筛后的候选打分，取 top_k 输出，并把子块展开为完整父块。
+# prefusion_top_n 需 >= top_k；当融合候选数 <= 该值时截断为空操作（小样本时行为与未启用 RRF 一致）。
+# hybrid_candidates 按全量语料（4189 篇 / 约 2.5 万切块）取值：每腿 50 条 → 融合池最多 100 条，
+# 由 RRF 初筛选出 20 条交给 cross-encoder（此时 RRF 的截断才真正起作用）。
+hybrid_candidates = 50
+rrf_k = 60
+prefusion_top_n = 20
+# 单文档贡献上限（贪心去重）：不设此值时，《民法典》1212 块这类"大部头"可以占满全部 20 个
+# 初筛名额，cross-encoder 只能在同一篇文档的碎片里排序，混合语料查询的召回覆盖会坍塌。
+# 取 3：既允许同一部法规贡献相邻条款（跨条综合问需要），又不让单篇垄断候选池。
+# 若某次查询确实只有少数文档命中，配额不足的名额会按名次回填，池子大小不会因此变小。
+max_chunks_per_document = 3
+# 配额排除项的补充检索（"可能对你有帮助的内容"）：通过了向量/BM25 两条召回腿（即被判定为
+# 相关）却因上面的单文档配额被丢弃的候选，在 top_k 之后附加返回，并在提示词里单独成段。
+# 它针对的是配额结构上无法覆盖的查询形态：答案分散在同一条法规的多个条款里，而该法规只能
+# 进 3 条候选，真正含答案的条款（实测 vat-001 的《增值税法》第十条「增值税税率」）反而输给
+# 了自己的邻居。这些候选没有经过 cross-encoder 打分，只是"未被优先采用"，所以按 RRF 名次
+# 排序、带 quota_overflow 标记返回，消费方必须当作提示而非等价证据。
+# 取 3 而非更大：数量一大就等于把单文档配额的保护整体抵消掉。取 0 关闭该通道。
+quota_overflow_top_n = 3
+
+[knowledge.chat]
+enabled = true
+temperature = 0.0
+max_tokens = 3000
+max_context_chars = 24000
+timeout_seconds = 120
+# 模型由用户在对话页选择；厂商参数仅发给对应 provider。
+provider_extra_body = { deepseek = { thinking = { type = "disabled" } } }
 
 [knowledge.pgvector]
-enabled = true
+# 已弃用（第二期决策：向量只走 Milvus，文档/切块元数据仍存 PostgreSQL，pgvector 不再作为第二向量库）。
+# 该键为兼容资源看板与 API 保留，enabled 保持 false，绝不实际启用 pgvector 检索。
+enabled = false
 embedding_dimension = 1536
 collection = "knowledge_chunks"
 
-# Session memory and long-term memory (user habits / project facts).
+# Milvus（单一向量库）。默认连接本机服务。
+# 若该实例启用了鉴权，请在环境中设置 MILVUS_PASSWORD 并在 password 处引用它：
+#     setx MILVUS_PASSWORD "<你的 Milvus 密码>"
+#     password = "${MILVUS_PASSWORD}"
+[knowledge.milvus]
+enabled = true
+host = "127.0.0.1"   # ← 替换为运行 Milvus 的另一台主机 IP
+port = 19530
+user = ""
+password = "${MILVUS_PASSWORD}"            # 未启用鉴权时留空；否则改 ${MILVUS_PASSWORD}
+database = "default"
+collection = "knowledge_chunks"
+
+# Neo4j 知识图谱（Graph RAG 多跳扩散引擎）。默认连接本机服务。
+# Neo4j 凭证必须经环境变量注入，勿把明文写进本文件：
+#     setx NEO4J_PASSWORD "<你的 Neo4j 密码>"
+#     password = "${NEO4J_PASSWORD}"
+[knowledge.graph]
+enabled = true
+uri = "bolt://127.0.0.1:7687"
+user = "neo4j"
+password = "${NEO4J_PASSWORD}"             # ← 改为 ${NEO4J_PASSWORD}，勿留明文
+database = "neo4j"
+chunk_entity_label = "KnowledgeChunk"
+relation_label = "CONTAINS"        # 文档 → 切块 的包含关系（与 Neo4jGraphStore 写入一致）
+
+# 语义实体层（图谱的 LLM 抽取层，由 scripts/build_entities.py 执行）。
+# 粒度：每篇文档一次调用，输出按条款归属（锚点精确到条款）。
+# 词表：实体类型是**封闭枚举**（taxpayer/tax_type/tax_matter/tax_base/admin，
+#   见 app/knowledge/graph/entities.py），实体名不封闭；类型归不进去的候选会被丢弃并计数。
+# 主腿：智谱 GLM-5.3（配置注释与 [knowledge.evaluation] 的评判模型同源）。
+# 降级腿：主腿失败时同一请求改走 DeepSeek。额度耗尽属**持续性**故障，会直接熔断
+#   （不再对后续文档重试主腿），理由与发生时的文档数记录在运行统计里，见
+#   app/knowledge/graph/entity_client.py；fallback_provider 留空即关闭降级、失败即上抛。
+# 两条腿的私有字段各自独立：thinking 是 DeepSeek 的字段，绝不能发给智谱。
+# 深度思考**只在离线建图时打开**，检索侧不经过本模块，因此不受影响。
+#
+# GLM-5.3 始终思考，`thinking` 只接受 enabled（发 disabled 会被端点直接拒绝）：
+#   实测 "该模型始终思考，不支持关闭思考；请使用 low、high 或 max"。
+# 因此主腿**不是**关掉思考，而是用 reasoning_effort 给思考链设上限。默认档下
+#   思考链会烧穿 max_tokens：20 条款的批次 finish_reason=length，二分到 2 条款
+#   仍截断（截断与批次大小无关，拆分治不了）。low 档实测 7~10s、约 700 completion
+#   tokens、20/20 条款全部回执、零丢弃——与 [knowledge.evaluation] 评判模型当初
+#   必须降到 low 才能返回合法 JSON 是同一个现象。
+# 该字段经 LLMRequest.extra_body 透传（reasoning_effort 是 LiteLLM 认识的
+#   OpenAI 参数，LLMService 未单独暴露，故走 extra_body 原样下发）。
+[knowledge.graph.entity]
+enabled = true
+provider = "zhipu"
+model = "zai/glm-5.3"
+temperature = 0.0
+max_tokens = 8192                  # low 档下实测约 700 tokens；仍是截断后的硬边界
+timeout_seconds = 180              # low 档实测 7~10s，留足长批次与限流的余量
+concurrency = 4                    # 智谱并发限制是真正的天花板
+max_clauses_per_call = 20          # 一个 prompt 内的条款上限（超长文档会切分）
+max_chars_per_call = 12000         # 单次调用的正文字符上限
+max_split_depth = 3                # 解析失败后二分重试的最大深度
+extra_body = { reasoning_effort = "low" }
+fallback_provider = "deepseek"
+fallback_model = "deepseek/deepseek-v4-flash"   # 与 [llm].model / [llm].pricing 保持一致
+fallback_extra_body = { thinking = { type = "enabled" } }
+
+# 图扩散腿（读侧）：把图谱当作第三条召回腿，与向量 / BM25 一起进 RRF 融合。
+# 两条只有图能走的路（见 app/knowledge/graph/expand.py）：
+#   - Clause -CITES-> Clause       语料自身的法条援引（第四条引第三条）；
+#   - Clause -MENTIONS-> Entity <-MENTIONS- Clause   两跳共享实体（不物化条款间边，
+#     否则是 O(n^2) 垃圾边，见 app/knowledge/graph/neo4j.py）。
+# 两条都是**方向无关**遍历：引用指向后方，只顺向走会让"被引条款"永远到不了。
+# enabled 默认 false —— 打开它必须是一次显式决定，否则检索行为会被静默改写。
+# use_cites / use_mentions 分开，是为了能把效果归因到结构层或实体层，而不是笼统的"图"。
+# 注意：实体层有 41.4% 条款无锚点（见 2026-09-30 实体层文档 §7），两跳对这部分天然断路。
+#
+# use_mentions 实测为负（详见 2026-09-30_1004 检索侧图扩散腿文档 §5）：
+#   四臂对比里 mentions 腿判别命中 5/10 与基线持平，且把 cites 腿单独跑出的
+#   6/10 拉回 5/10 —— 两条腿的 weight 量纲不同（CITES 通常是 1，MENTIONS 是
+#   共享实体数，常见 3~5），合并排序时 mentions 邻域系统性压掉 cites 邻域。
+#   因此在实体层精度改善前默认关闭；要复现该结论把这里改回 true 即可。
+[knowledge.graph.expand]
+enabled = false                    # 对比实验显式开启；默认关闭
+seed_top_n = 10                    # 种子=其它腿 rank 前列的条款；每条种子都会放大 Cypher 扇出
+neighbors_per_seed = 8             # 单种子上限：一个"增值税"实体能连到上千条款
+max_results = 20                   # 本腿总上限：RRF 池是与词法腿共享的，无上限会挤掉它们
+min_shared_entities = 1            # 两跳至少共享几个实体；调高是廉价的精度旋钮
+use_cites = true
+use_mentions = false               # 实测负收益，见上方注释
+
+# 财税法规语料入库管线。语料以 .docx 为主，含 .pdf 与 .xlsx。
+# primary_extension 决定入库任务首选解析器；chunk_* 控制切块粒度（按字符）。
+# 父子两级切块（"小块检索，返回父块"）：
+#   - parent = 完整"第X条"条款，由 chunk_size_chars 界定上限；parent 不参与向量检索，
+#     只作为交付给调用方的上下文单位；
+#   - child  = 条款内按句子边界滑窗切出的检索单元，由 child_window_chars 界定，
+#     带 chunk_overlap_chars 重叠；它才是被 embedding / Milvus / BM25 索引的粒度。
+# 400 字符约等于 embedding 模型 bge-base-zh-v1.5 的最佳工作区间（≈512 token），
+# 也是"条款内一个完整语义段"的典型长度。child_window_chars 必须 <= chunk_size_chars，
+# 否则每个条款退化为单个子块、父子索引静默失效（chunker 会直接报错而非放过）。
+[knowledge.ingest]
+enabled = true
+primary_extension = "docx"
+accepted_extensions = [".docx", ".pdf", ".xlsx"]
+source_dir = "data/knowledge/raw"   # ← 把待入库的财税法规 docx/pdf/xlsx 丢进该目录（子目录按业务线分）
+chunk_size_chars = 900
+chunk_overlap_chars = 120
+child_window_chars = 400
+batch_size = 16
+
+# RAGAS 评测（检索 + 生成全链路，自动化 / 无参考量化评分）。
+# 指标策略：恒定计算三道无参考指标 —— Faithfulness（忠实度）、
+# Response Relevancy（答案相关性）、Context Precision（无参考版）；
+# Context Recall 按定义必须有 ground truth，因此仅当样本带 reference 字段时计算，
+# 缺失的样本在报告中显式标注 "skipped"，不计入均值（绝不用 0 或猜测值填充）。
+# 评判模型独立于 [llm]：用同一族模型自评会共享盲区；密钥经 [llm.providers] 从
+# 环境变量读取，不在配置里写明文。judge_model 沿用全局的 LiteLLM 命名（带 provider
+# 前缀，与 [llm].model 一致）；RAGAS 评判走该 provider 的 OpenAI 兼容端点，由
+# ragas_scorer 去掉前缀后发出。
+#
+# 评判模型与被测生成模型保持独立，以便评测结果可比较。
+[knowledge.evaluation]
+enabled = true
+judge_provider = "zhipu"
+judge_model = "zai/glm-5.3"
+# 评判腿的思考控制是**厂商私有**的，故两处分开写：GLM-5.3 始终思考、thinking 只接受
+# enabled，只能用 reasoning_effort 限速；DeepSeek 则认 thinking 字段、不认
+# reasoning_effort（那是智谱/OpenAI 的名字），发过去就是字段串味。
+judge_reasoning_effort = "low"   # GLM 专有：默认档的思考链会烧穿 max_tokens，NLI 调用跑不完
+judge_extra_body = {}            # GLM 不需要额外字段；空 = 不发出这个字段
+judge_temperature = 0.0        # 0 温度：分数变化应来自系统变化，而非评判模型随机性
+judge_timeout_seconds = 180    # 单次指标调用超时；超时按该样本该指标记 error，不中断整轮
+concurrency = 2                # 并发评判请求数（成本/限流旋钮）
+# 被测生成腿：留空则回落到 [llm] 的 provider/model（即当前产品默认路径）。
+answer_provider = ""
+answer_model = ""
+answer_top_k = 5
+answer_temperature = 0.0
+# 生成腿不需要推理：deepseek-v4-flash 的思考链与答案共用同一份 max_tokens，实测默认
+# 模式 3 次里有 2 次思考链吃满 1200 tokens、直接返回空答案；用官方开关关掉后 3/3 正常、
+# 延迟 1.2~1.6s。该开关经 LLMRequest.extra_body 原样透传给 provider —— 换生成模型
+# （如模型池里的其它非推理模型）时把它清空即可，不会把 DeepSeek 专有字段发给别家端点。
+answer_extra_body = { thinking = { type = "disabled" } }
+# 生成腿产出预算。关闭思考后答案通常只有几百字符，此处留出余量；空答案与"非空但被
+# max_tokens 截断"另由 KnowledgeAnswerer 显式判失败（见 app/knowledge/rag.py）。
+answer_max_tokens = 3000
+# 拼进提示词的上下文总字符上限，同时也是评判腿能看到的证据量。注意：单条命中先被
+# _MAX_HIT_CHARS(2000) 截断，因此 top_k × 2000 才是实际可用的上限 —— 15 题全量评测中
+# 每个样本都是 retrieved=5/contexts=5，即该预算从未生效；只有 answer_top_k 一起提高时
+# 它才会成为约束。
+max_context_chars = 24000
+
+# 记忆层：会话记忆与长期记忆（用户习惯 / 项目事实）。
 # session_history_limit caps how many prior turns are injected into prompts;
 # recall_limit caps how many durable memories are recalled per run;
 # auto_extract enables LLM-powered memory extraction after each request.
@@ -106,14 +329,12 @@ max_response_bytes = 1048576
 follow_redirects = true
 blocked_hosts = []
 
-[knowledge.milvus]
-enabled = true
-host = "127.0.0.1"
-port = 19530
-user = ""
-password = ""
-database = "default"
-collection = "knowledge_chunks"
+# Console login/session settings. session_secret signs the HttpOnly session
+# cookie; change it (or move it to a ${VAR} reference) for production.
+[auth]
+session_secret = "${SESSION_SECRET}"
+session_cookie_name = "ma_session"
+session_ttl_seconds = 604800
 
 [observability]
 service_name = "multiagent-service"
